@@ -6,14 +6,14 @@ export const MAX_PAGES = 5
 
 const LIST_FILTERS = {
   state_group__in: 'backlog,unstarted,started',
-  expand: 'state,assignees,labels',
+  expand: 'state,assignees,labels,parent',
   order_by: '-updated_at',
   paginate: 'cursor',
   per_page: String(PER_PAGE)
 }
 
-/** One item also gets its parent (design A5 of agent-item-context); list rows do not need it. */
-const DETAIL_EXPAND = `${LIST_FILTERS.expand},parent`
+/** Detail uses the same expand set (includes `parent`). */
+const DETAIL_EXPAND = LIST_FILTERS.expand
 
 export type Me = { id: string; displayName: string }
 
@@ -41,7 +41,7 @@ export type ListResult = {
   error?: string
 }
 
-export type ListOptions = { signal?: AbortSignal; deadline?: number; maxPages?: number }
+export type ListOptions = { signal?: AbortSignal; deadline?: number; maxPages?: number; scope?: 'mine' | 'team' }
 
 /** Walks cursor pages, repeating every filter on each: a cursor encodes only the position. */
 export async function listMyOpenItems(
@@ -57,7 +57,8 @@ export async function listMyOpenItems(
   for (let page = 0; page < (options.maxPages ?? MAX_PAGES); page++) {
     let body: Record<string, unknown>
     try {
-      const query = { assignee_id: userId, ...LIST_FILTERS, ...(cursor ? { cursor } : {}) }
+      const scopeFilter = options.scope === 'team' ? {} : { assignee_id: userId }
+      const query = { ...scopeFilter, ...LIST_FILTERS, ...(cursor ? { cursor } : {}) }
       body = ((await planeGet(conn, path, { query, signal: options.signal, deadline: options.deadline })) ??
         {}) as Record<string, unknown>
     } catch (error) {

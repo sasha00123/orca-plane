@@ -16,6 +16,9 @@ export type Item = {
   priority: Priority
   /** Label names. */
   labels: string[]
+  assignees?: string[]
+  targetDate?: string | null
+  parentTitle?: string | null
   updatedAt: string
 }
 
@@ -53,6 +56,7 @@ export function toItem(raw: unknown): Item | null {
   // A key with a line break could end the prompt's ticket block early (#56); Plane never sends one.
   if (!id || !key || MULTI_LINE.test(key)) return null
   const state = row.state && typeof row.state === 'object' ? (row.state as Row) : null
+  const parent = row.parent && typeof row.parent === 'object' ? (row.parent as Row) : null
   const group = str(state?.group)
   const priority = str(row.priority)
   return {
@@ -64,6 +68,9 @@ export function toItem(raw: unknown): Item | null {
     stateGroup: GROUPS.has(group) ? (group as StateGroup) : 'unknown',
     priority: PRIORITIES.has(priority) ? (priority as Priority) : 'none',
     labels: names(row.labels, 'name'),
+    assignees: names(row.assignees, 'display_name'),
+    targetDate: str(row.target_date) || null,
+    parentTitle: parent ? str(parent.name) || null : null,
     updatedAt: str(row.updated_at)
   }
 }

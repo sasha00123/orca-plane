@@ -15,6 +15,9 @@ test('the probe list page maps', () => {
     stateGroup: 'started',
     priority: 'low',
     labels: [],
+    assignees: ['<display_name>'],
+    targetDate: null,
+    parentTitle: null,
     updatedAt: '2026-11-16T18:20:38.353144Z'
   })
   assert.equal(items[1]?.stateGroup, 'unstarted')
@@ -74,4 +77,10 @@ test('a missing or unreadable parent is null', () => {
   assert.equal(toDetail(item, () => '')?.parent, null)
   assert.equal(toDetail({ ...item, parent_id: '9f0c', parent: '9f0c' }, () => '')?.parent, null)
   assert.equal(toDetail({ ...item, parent: { id: '9f0c' } }, () => '')?.parent, null)
+})
+
+test('toItem maps parentTitle and targetDate when present', () => {
+  const mapped = toItem({ ...page.data[0], parent: { id: 'p1', name: 'Auth Epic' }, target_date: '2026-12-01' })
+  assert.equal(mapped?.parentTitle, 'Auth Epic')
+  assert.equal(mapped?.targetDate, '2026-12-01')
 })

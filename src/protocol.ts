@@ -77,7 +77,7 @@ declare module 'orca' {
     'connection.connect': { input: ConnectInput; output: Result<{ status: ConnectionStatus }> }
     'connection.disconnect': { output: ConnectionStatus }
     /** Answers from the cache at once; refreshes in the background when old or `force`. */
-    'items.list': { input: { force?: boolean } | undefined; output: ItemsState }
+    'items.list': { input: { force?: boolean; scope?: 'mine' | 'team' } | undefined; output: ItemsState }
     /** `projectId` is the Plane project; without it the item is fetched by its key alone. */
     'item.get': { input: { key: string; projectId?: string }; output: Result<{ item: ItemDetail }> }
     /** Opens any item of the workspace by a typed key or a pasted Plane URL; a refused text sends no request. */

@@ -118,6 +118,10 @@ const filterShown = atom(false)
 const moreShown = atom(false)
 /** Active tag filters, `priority:<p>` or `label:<name>`; an item must have them all (design D10). */
 const tags = atom<string[]>('plane.tags', [], { persist: 'plugin' })
+type Scope = 'mine' | 'team'
+type GroupMode = 'auto' | 'epic' | 'state' | 'assignee'
+const scope = atom<Scope>('mine')
+const groupBy = atom<GroupMode>('plane.groupBy', 'auto', { persist: 'plugin' })
 /** The selected Plane project's id (design D10). */
 const tab = atom<string | null>('plane.tab', null, { persist: 'plugin' })
 /** The open item; persisted, so reopening the panel returns to it. */
@@ -315,7 +319,14 @@ async function disconnect(): Promise<void> {
 }
 
 async function refresh(): Promise<void> {
-  set(items, await plugin.request('items.list', { force: true }))
+  const current = read(scope)
+  set(items, await plugin.request('items.list', current === 'team' ? { force: true, scope: 'team' } : { force: true }))
+}
+
+async function switchScope(next: Scope): Promise<void> {
+  if (read(scope) === next) return
+  set(scope, next)
+  set(items, await plugin.request('items.list', { scope: next }))
 }
 
 async function fetchDetail(ref: ItemRef): Promise<Loaded> {
@@ -425,9 +436,40 @@ async function hideLeftover(key: string): Promise<void> {
   }
 }
 
+const localIsoDate = (offsetDays = 0): string => {
+  const date = new Date()
+  date.setDate(date.getDate() + offsetDays)
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
+const dueTagsOf = (item: Item): string[] => {
+  const due = item.targetDate
+  if (!due) return ['due:none']
+  const today = localIsoDate(0)
+  if (due < today) return ['due:overdue']
+  if (due === today) return ['due:today', 'due:week']
+  return due <= localIsoDate(7) ? ['due:week'] : []
+}
+
+const DUE_LABELS: Record<string, { label: string; tone: Tone }> = {
+  'due:overdue': { label: 'Overdue', tone: 'danger' },
+  'due:today': { label: 'Today', tone: 'warning' },
+  'due:week': { label: 'Next 7 days', tone: 'accent' },
+  'due:none': { label: 'No due date', tone: 'neutral' }
+}
+
 const matches = (item: Item, query: string) =>
-  [item.key, item.title, ...item.labels].some((value) => value.toLowerCase().includes(query))
-const tagsOf = (item: Item) => [...(item.priority === 'none' ? [] : [`priority:${item.priority}`]), ...item.labels.map((label) => `label:${label}`)]
+  [item.key, item.title, ...item.labels, item.parentTitle ?? '', ...(item.assignees ?? [])].some((value) =>
+    value.toLowerCase().includes(query)
+  )
+const tagsOf = (item: Item) => [
+  ...(item.priority === 'none' ? [] : [`priority:${item.priority}`]),
+  ...dueTagsOf(item),
+  ...item.labels.map((label) => `label:${label}`)
+]
 const toggleTag = (tag: string) => update(tags, (all) => (all.includes(tag) ? all.filter((entry) => entry !== tag) : [...all, tag]))
 function clearFilters(): void {
   set(search, '')
@@ -599,9 +641,10 @@ function Confirmation({ current }: { current: Loaded }) {
 
 /** One line (design P6): the pressable item (priority dot, key, title) opens it; the Start or workspace icon
  *  sits beside it, since a pressable ListItem cannot hold other controls. `keyWidth` aligns the titles. */
-function ItemRow({ item, keyWidth }: { item: Item; keyWidth: number }) {
+function ItemRow({ item, keyWidth, showEpic = false }: { item: Item; keyWidth: number; showEpic?: boolean }) {
   const asked = read(confirmation)
   const asking = asked?.key === item.key
+  const meta = [showEpic ? item.parentTitle : null, item.targetDate].filter(Boolean).join(' · ')
   // Orca refuses a panel of more than 5000 nodes: a row spends as few as it can (no wrapper around the dot or
   // the icon, no Stack unless a confirmation follows), and Groups draws at most MAX_ROWS of them.
   const line = (
@@ -632,6 +675,11 @@ function ItemRow({ item, keyWidth }: { item: Item; keyWidth: number }) {
                 <Text size="sm" weight="medium" truncate>
                   {item.title}
                 </Text>
+                {meta ? (
+                  <Text size="xs" muted truncate>
+                    {meta}
+                  </Text>
+                ) : null}
               </Box>
             </Box>
           </ListItem>
@@ -693,7 +741,7 @@ function ListView({ state }: { state: ItemsState | null }) {
           label="Search"
           labelHidden
           type="search"
-          placeholder="Search by key, title or label"
+          placeholder="Search by key, title, epic, assignee or label"
           value={read(search)}
           onChange={(value) => set(search, value)}
         />
@@ -708,10 +756,46 @@ function ListView({ state }: { state: ItemsState | null }) {
       ) : null}
       {failedOpen ? <Callout tone="danger">{failedOpen}</Callout> : null}
       {state.completeness !== 'error' && state.items.length === 0 ? (
-        <EmptyState icon="check" title="Nothing open is assigned to you" />
+        <EmptyState
+          icon="check"
+          title={read(scope) === 'team' ? 'Nothing open in this workspace' : 'Nothing open is assigned to you'}
+        />
       ) : null}
       {tabs.length > 0 ? (
         <Stack gap="sm">
+          <Box direction="row" gap="xs" width="100%" minWidth={0}>
+            <Box grow shrink minWidth={0}>
+              <Select
+                label="Scope"
+                labelHidden
+                value={read(scope)}
+                options={[
+                  { value: 'mine', label: 'Assigned to me' },
+                  { value: 'team', label: 'Team tasks' }
+                ]}
+                onChange={(value) => void switchScope(value === 'team' ? 'team' : 'mine')}
+              />
+            </Box>
+            <Box grow shrink minWidth={0}>
+              <Select
+                label="Group by"
+                labelHidden
+                value={read(groupBy)}
+                options={[
+                  { value: 'auto', label: 'Group: Auto' },
+                  { value: 'epic', label: 'Group: Epic' },
+                  { value: 'state', label: 'Group: State' },
+                  { value: 'assignee', label: 'Group: Assignee' }
+                ]}
+                onChange={(value) =>
+                  set(
+                    groupBy,
+                    value === 'epic' || value === 'state' || value === 'assignee' ? value : 'auto'
+                  )
+                }
+              />
+            </Box>
+          </Box>
           {/* One picker never wraps, however many projects (design P2); "Project" is a Start's Orca project. */}
           <Select
             label="Plane project"
@@ -832,10 +916,12 @@ function TagButton({ tag, tone = 'neutral', children }: { tag: string; tone?: To
  *  active tag no longer in it, so a remembered tag can always be turned off. */
 function FilterStrip({ listed }: { listed: Item[] }) {
   const active = read(tags)
+  const hasDueDates = listed.some((item) => Boolean(item.targetDate)) || active.some((tag) => tag.startsWith('due:'))
   const offered = new Set([...listed.flatMap(tagsOf), ...active])
   const labels = [...offered].filter((tag) => tag.startsWith('label:')).sort((a, b) => a.localeCompare(b))
   const priorities = PRIORITIES.filter((priority) => offered.has(`priority:${priority}`))
-  if (priorities.length === 0 && labels.length === 0) {
+  const dues = hasDueDates ? Object.keys(DUE_LABELS).filter((tag) => offered.has(tag)) : []
+  if (priorities.length === 0 && labels.length === 0 && dues.length === 0) {
     return (
       <Text muted size="xs">
         No priorities or labels to filter by.
@@ -847,6 +933,11 @@ function FilterStrip({ listed }: { listed: Item[] }) {
       {priorities.map((priority) => (
         <TagButton key={`priority:${priority}`} tag={`priority:${priority}`} tone={PRIORITY_TONE[priority]}>
           {priority}
+        </TagButton>
+      ))}
+      {dues.map((tag) => (
+        <TagButton key={tag} tag={tag} tone={DUE_LABELS[tag].tone}>
+          {DUE_LABELS[tag].label}
         </TagButton>
       ))}
       {labels.map((tag) => (
@@ -871,13 +962,42 @@ function stateOrder(items: Item[]): string[] {
     .map(([name]) => name)
 }
 
-/** One project's shown items by state, ordered by Plane group, then the state's count among `all` (the project's
- *  loaded items, so a search does not reorder them), then name; empty only under a search. */
+function bucketGroups(
+  entries: Item[],
+  all: Item[],
+  mode: 'epic' | 'state' | 'assignee'
+): Array<{ name: string; rows: Item[] }> {
+  if (mode === 'state') {
+    return stateOrder(all)
+      .map((name) => ({ name, rows: entries.filter((item) => (item.stateName ?? UNKNOWN_STATE) === name) }))
+      .filter((group) => group.rows.length > 0)
+  }
+  const buckets = new Map<string, Item[]>()
+  const fallback = mode === 'epic' ? 'No epic' : 'Unassigned'
+  for (const item of entries) {
+    const keys =
+      mode === 'epic'
+        ? [item.parentTitle || fallback]
+        : item.assignees?.length
+          ? item.assignees
+          : [fallback]
+    for (const key of keys) {
+      const list = buckets.get(key)
+      if (list) list.push(item)
+      else buckets.set(key, [item])
+    }
+  }
+  return [...buckets.entries()]
+    .sort(([a], [b]) => (a === fallback ? 1 : b === fallback ? -1 : a.localeCompare(b)))
+    .map(([name, rows]) => ({ name, rows }))
+}
+
+/** One project's shown items grouped by Epic (when present), State, or Assignee. */
 function Groups({ entries, all }: { entries: Item[]; all: Item[] }) {
   if (entries.length === 0) {
     return (
       <Stack gap="xs">
-        <EmptyState icon="search" title="No matching items" description="Try another key, title or label." />
+        <EmptyState icon="search" title="No matching items" description="Try another key, title, epic, assignee or label." />
         <Row>
           <Button variant="outline" size="sm" onPress={clearFilters}>
             {read(tags).length > 0 ? 'Clear filters' : 'Clear search'}
@@ -886,18 +1006,17 @@ function Groups({ entries, all }: { entries: Item[]; all: Item[] }) {
       </Stack>
     )
   }
+  const chosen = read(groupBy)
+  const mode = chosen === 'auto' ? (all.some((item) => Boolean(item.parentTitle)) ? 'epic' : 'state') : chosen
   const keyWidth = keyWidthOf(entries)
   let room = MAX_ROWS
-  const groups = stateOrder(all)
-    .map((name) => ({ name, rows: entries.filter((item) => (item.stateName ?? UNKNOWN_STATE) === name) }))
-    .filter((group) => group.rows.length > 0)
+  const groups = bucketGroups(entries, all, mode)
     .map((group) => {
       const drawn = group.rows.slice(0, room)
       room -= drawn.length
       return { ...group, drawn }
     })
     .filter((group) => group.drawn.length > 0)
-  // A plain header per state, a separator between states; groups do not collapse (design P5).
   return (
     <Stack gap="sm">
       {groups.map(({ name, rows, drawn }, index) => (
@@ -911,7 +1030,7 @@ function Groups({ entries, all }: { entries: Item[]; all: Item[] }) {
             </Text>
           </Box>
           {drawn.map((item) => (
-            <ItemRow key={item.key} item={item} keyWidth={keyWidth} />
+            <ItemRow key={`${name}:${item.key}`} item={item} keyWidth={keyWidth} showEpic={mode !== 'epic'} />
           ))}
         </Stack>
       ))}

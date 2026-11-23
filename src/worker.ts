@@ -110,7 +110,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   orca.panels.handle('connection.get', () => conns.status())
   orca.panels.handle('connection.connect', (input) => conns.connect(input))
   orca.panels.handle('connection.disconnect', () => conns.disconnect())
-  orca.panels.handle('items.list', (input) => items.list(input?.force === true))
+  orca.panels.handle('items.list', (input) => items.list(input?.force === true, input?.scope === 'team' ? 'team' : 'mine'))
   orca.panels.handle('item.get', ({ key, projectId }) => items.detail(key, projectId))
   orca.panels.handle('item.lookup', ({ text }) => lookup(conns, text))
   orca.panels.handle('starts.get', () => starts.get())

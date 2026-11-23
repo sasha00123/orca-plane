@@ -35,7 +35,7 @@ test('every page repeats the filters, order and page size (design D1)', async ()
     assert.deepEqual(query, {
       assignee_id: USER,
       state_group__in: 'backlog,unstarted,started',
-      expand: 'state,assignees,labels',
+      expand: 'state,assignees,labels,parent',
       order_by: '-updated_at',
       paginate: 'cursor',
       per_page: '200',
@@ -125,4 +125,12 @@ test('getItem by UUID asks the project-scoped route; a 404 is not_found', async 
   assert.equal(url.searchParams.get('expand'), 'state,assignees,labels,parent')
   fakeFetch(() => ({ status: 404, json: { error: 'The requested resource was not found.' } }))
   await assert.rejects(getItem(conn, 'truelogic', project, id), (e: unknown) => e instanceof PlaneError && e.kind === 'not_found')
+})
+
+test('team scope omits assignee_id filter', async () => {
+  const fake = fakeFetch(() => ({ json: { data: [], has_more: false } }))
+  await listMyOpenItems(conn, 'truelogic', 'u1', { scope: 'team' })
+  const url = new URL(fake.calls[0].url)
+  assert.equal(url.searchParams.has('assignee_id'), false)
+  assert.equal(url.searchParams.get('expand'), 'state,assignees,labels,parent')
 })

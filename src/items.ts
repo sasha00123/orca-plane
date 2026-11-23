@@ -19,8 +19,13 @@ const COUNT_TOOLTIP = 'Plane: open work items assigned to you'
 
 const EMPTY: Cache = { items: [], completeness: null, fetchedAt: null, error: null, checkedAt: 0 }
 
+export type Scope = 'mine' | 'team'
+
+const storageKey = (connId: string, scope: Scope) => keyOf(connId, scope === 'team' ? 'items:team' : 'items')
+
 export class Items {
-  private running: Promise<void> | null = null
+  private running: Partial<Record<Scope, Promise<void>>> = {}
+  private activeScope: Scope = 'mine'
   private timer: ReturnType<typeof setInterval> | null = null
   /** The last list the count showed (null: hidden), and how many linked agents need input. */
   private shown: Pick<Cache, 'items' | 'completeness'> | null = null
@@ -31,57 +36,61 @@ export class Items {
     private readonly conns: Connections
   ) {
     conns.onChange(async (conn) => {
-      this.running = null
+      this.running = {}
+      this.activeScope = 'mine'
       await this.showCount(conn ? EMPTY : null)
       await this.arm()
-      if (conn) void this.refresh()
-      this.orca.panels.post('items.changed', await this.state())
+      if (conn) void this.refresh('mine')
+      this.orca.panels.post('items.changed', await this.state('mine'))
     })
     orca.settings.onDidChange((change) => {
       if (change.key === 'refreshMinutes') void this.arm()
     })
   }
 
-  private async cache(conn: Connection): Promise<Cache> {
-    const saved = (await this.orca.storage.get(keyOf(conn.id, 'items'))) as Cache | null
+  private async cache(conn: Connection, scope: Scope = 'mine'): Promise<Cache> {
+    const saved = (await this.orca.storage.get(storageKey(conn.id, scope))) as Cache | null
     if (!saved || typeof saved !== 'object') return EMPTY
-    // A cache written before list items carried labels.
-    return { ...saved, items: saved.items.map((item) => ({ ...item, labels: item.labels ?? [] })) }
+    return {
+      ...saved,
+      items: saved.items.map((item) => ({ ...item, labels: item.labels ?? [] }))
+    }
   }
 
-  async state(): Promise<ItemsState> {
+  async state(scope: Scope = this.activeScope): Promise<ItemsState> {
     const conn = await this.conns.current()
     if (!conn) return { ...EMPTY, refreshing: false }
-    const { checkedAt: _checked, ...cache } = await this.cache(conn)
-    return { ...cache, refreshing: this.running !== null }
+    const { checkedAt: _checked, ...cache } = await this.cache(conn, scope)
+    return { ...cache, refreshing: Boolean(this.running[scope]) }
   }
 
   /** The cache at once; starts a refresh when it is older than a minute or `force` is set. */
-  async list(force = false): Promise<ItemsState> {
+  async list(force = false, scope: Scope = 'mine'): Promise<ItemsState> {
+    this.activeScope = scope
     const conn = await this.conns.current()
-    if (conn && (force || env.now() - (await this.cache(conn)).checkedAt > STALE_AFTER_MS)) {
-      void this.refresh()
+    if (conn && (force || env.now() - (await this.cache(conn, scope)).checkedAt > STALE_AFTER_MS)) {
+      void this.refresh(scope)
     }
-    return this.state()
+    return this.state(scope)
   }
 
-  /** One refresh at a time: later calls join the running one. */
-  refresh(): Promise<void> {
-    if (!this.running) {
-      const run: Promise<void> = this.run().finally(() => {
-        if (this.running === run) this.running = null
+  /** One refresh at a time per scope: later calls join the running one. */
+  refresh(scope: Scope = this.activeScope): Promise<void> {
+    if (!this.running[scope]) {
+      const run: Promise<void> = this.run(scope).finally(() => {
+        if (this.running[scope] === run) delete this.running[scope]
       })
-      this.running = run
+      this.running[scope] = run
     }
-    return this.running
+    return this.running[scope]!
   }
 
-  private async run(): Promise<void> {
+  private async run(scope: Scope): Promise<void> {
     const conn = await this.conns.current()
     if (!conn) return
     const generation = this.conns.generation
     const signal = this.conns.signal
-    const previous = await this.cache(conn)
+    const previous = await this.cache(conn, scope)
     const started = env.now()
     const deadline = new AbortController()
     const timer = setTimeout(
@@ -94,7 +103,8 @@ export class Items {
     try {
       const result = await listMyOpenItems(conn, conn.slug, conn.userId, {
         signal: deadline.signal,
-        deadline: started + DEADLINE_MS
+        deadline: started + DEADLINE_MS,
+        scope
       })
       const items = result.rows.map(toItem).filter((item): item is Item => item !== null)
       const dropped = result.rows.length - items.length
@@ -117,9 +127,11 @@ export class Items {
     }
     // A disconnect or account switch while this ran: its result belongs to no one.
     await this.conns.whileCurrent(generation, async () => {
-      await this.orca.storage.set(keyOf(conn.id, 'items'), next)
-      await this.showCount(next)
-      this.orca.panels.post('items.changed', { ...withoutChecked(next), refreshing: false })
+      await this.orca.storage.set(storageKey(conn.id, scope), next)
+      if (scope === 'mine') await this.showCount(next)
+      if (this.activeScope === scope) {
+        this.orca.panels.post('items.changed', { ...withoutChecked(next), refreshing: false })
+      }
     })
   }
 
