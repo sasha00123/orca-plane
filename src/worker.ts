@@ -1,5 +1,6 @@
 // The plugin's worker: the only part with network access and the only holder of the token.
 // Orca starts it with the plugin (it has a status bar item) and transpiles this file on load.
+import tls from 'node:tls'
 import type { OrcaWorkerApi } from 'orca/worker'
 import { agentFinder } from './agents'
 import { Connections } from './connection'
@@ -15,8 +16,26 @@ import { Starts } from './starts'
 
 // Timers to stop on deactivate; a set, since tests mount the worker more than once per module.
 const running = new Set<Items>()
+let systemCAsLoaded = false
+
+// Electron disables NODE_EXTRA_CA_CERTS/NODE_OPTIONS in plugin workers, so include OS-trusted CAs.
+function trustSystemCAs(): void {
+  if (systemCAsLoaded) return
+  systemCAsLoaded = true
+  const api = tls as typeof tls & {
+    getCACertificates?: (type?: 'default' | 'system' | 'bundled' | 'extra') => string[]
+    setDefaultCACertificates?: (certs: string[]) => void
+  }
+  if (typeof api.getCACertificates === 'function' && typeof api.setDefaultCACertificates === 'function') {
+    api.setDefaultCACertificates([
+      ...api.getCACertificates('default'),
+      ...api.getCACertificates('system')
+    ])
+  }
+}
 
 export default function activate(orca: OrcaWorkerApi): void {
+  trustSystemCAs()
   const conns = new Connections(orca)
   const items = new Items(orca, conns)
   const starts = new Starts(orca, conns, items)
